@@ -2,8 +2,8 @@
 
 from typing import Any, Dict, Optional
 
-# ✅ UPDATED IMPORT — new package name
-from langchain_openai import ChatOpenAI
+# ✅ UPDATED IMPORT — modern LangChain package
+from langchain.chat_models import ChatOpenAI
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain.vectorstores import FAISS
@@ -18,8 +18,15 @@ def build_chat_chain(
 ) -> ConversationalRetrievalChain:
     """
     Build and return a ConversationalRetrievalChain using the provided vectorstore.
-    - vectorstore: FAISS instance from pdf_loader.create_vectorstore_from_pdf
-    - llm_model_name: optional model name (e.g., 'gpt-4o-mini' or 'gpt-3.5-turbo')
+    
+    Args:
+        vectorstore (FAISS): FAISS instance from pdf_loader.create_vectorstore_from_pdf
+        llm_model_name (str, optional): Model name (e.g., 'gpt-4o-mini' or 'gpt-3.5-turbo')
+        temperature (float): Sampling temperature for LLM
+        max_tokens (int, optional): Maximum tokens for response
+    
+    Returns:
+        ConversationalRetrievalChain: Ready-to-use chat chain
     """
     # Choose LLM - default to gpt-3.5-turbo if not provided
     model_name = llm_model_name or "gpt-3.5-turbo"
@@ -38,12 +45,24 @@ def build_chat_chain(
     return chain
 
 
-def ask_chain(chain: ConversationalRetrievalChain, question: str, chat_history: Optional[list] = None) -> Dict[str, Any]:
+def ask_chain(
+    chain: ConversationalRetrievalChain, 
+    question: str, 
+    chat_history: Optional[list] = None
+) -> Dict[str, Any]:
     """
     Ask a question using the chain. Returns a dict with:
     - answer: str
     - source_documents: list[Document]
-    - chat_history: updated memory (if supported)
+    - raw: full output from chain
+    
+    Args:
+        chain (ConversationalRetrievalChain): The chat chain instance
+        question (str): User question
+        chat_history (list, optional): Previous chat history if available
+    
+    Returns:
+        dict: answer, sources, raw output
     """
     inputs = {"question": question}
     if chat_history:
