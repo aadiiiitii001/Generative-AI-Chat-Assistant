@@ -20,4 +20,4 @@ user_input = st.text_input("You:", "")
 
 if st.button("Ask") and user_input:
     response = chat_engine.ask(user_input, memory)
-    st.write("**Assistant:**", response)
+    st.markdown(f"**Assistant:** {response}")
