@@ -2,12 +2,11 @@
 
 from typing import Any, Dict, Optional
 
-# ✅ UPDATED IMPORT — modern LangChain package
-from langchain.chat_models import ChatOpenAI
+# ✅ Correct imports for new LangChain versions
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain.vectorstores import FAISS
-from langchain.schema import Document
 
 
 def build_chat_chain(
@@ -17,58 +16,52 @@ def build_chat_chain(
     max_tokens: Optional[int] = None,
 ) -> ConversationalRetrievalChain:
     """
-    Build and return a ConversationalRetrievalChain using the provided vectorstore.
-    
-    Args:
-        vectorstore (FAISS): FAISS instance from pdf_loader.create_vectorstore_from_pdf
-        llm_model_name (str, optional): Model name (e.g., 'gpt-4o-mini' or 'gpt-3.5-turbo')
-        temperature (float): Sampling temperature for LLM
-        max_tokens (int, optional): Maximum tokens for response
-    
-    Returns:
-        ConversationalRetrievalChain: Ready-to-use chat chain
+    Build ConversationalRetrievalChain with FAISS vectorstore.
     """
-    # Choose LLM - default to gpt-3.5-turbo if not provided
-    model_name = llm_model_name or "gpt-3.5-turbo"
-    llm = ChatOpenAI(model=model_name, temperature=temperature)
 
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    model_name = llm_model_name or "gpt-4o-mini"
+
+    llm = ChatOpenAI(
+        model=model_name,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+    memory = ConversationBufferMemory(
+        memory_key="chat_history",
+        return_messages=True
+    )
+
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
     chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
         retriever=retriever,
         memory=memory,
-        return_source_documents=True  # useful for showing sources/traceability
+        return_source_documents=True
     )
 
     return chain
 
 
 def ask_chain(
-    chain: ConversationalRetrievalChain, 
-    question: str, 
-    chat_history: Optional[list] = None
+    chain: ConversationalRetrievalChain,
+    question: str,
+    chat_history: Optional[list] = None,
 ) -> Dict[str, Any]:
     """
-    Ask a question using the chain. Returns a dict with:
-    - answer: str
-    - source_documents: list[Document]
-    - raw: full output from chain
-    
-    Args:
-        chain (ConversationalRetrievalChain): The chat chain instance
-        question (str): User question
-        chat_history (list, optional): Previous chat history if available
-    
-    Returns:
-        dict: answer, sources, raw output
+    Execute query against chat chain.
     """
+
     inputs = {"question": question}
+
     if chat_history:
         inputs["chat_history"] = chat_history
 
     output = chain(inputs)
-    answer = output.get("answer")
-    sources = output.get("source_documents", [])
-    return {"answer": answer, "source_documents": sources, "raw": output}
+
+    return {
+        "answer": output.get("answer"),
+        "source_documents": output.get("source_documents", []),
+        "raw": output,
+    }
