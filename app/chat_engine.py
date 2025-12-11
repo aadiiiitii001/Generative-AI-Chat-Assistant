@@ -1,64 +1,88 @@
-import faiss
+# app/pdf_loader.py
+
+import os
 import numpy as np
+import faiss
 from PyPDF2 import PdfReader
 from openai import OpenAI
 
 client = OpenAI()
 
-class ChatEngine:
-    def __init__(self, model_name="gpt-4o-mini"):
-        self.model_name = model_name
-        self.index = None
-        self.text_chunks = []
-        self.embeddings = []
+DEFAULT_INDEX_DIR = "vectorstores"
 
-    def load_pdf(self, pdf_file):
-        reader = PdfReader(pdf_file)
-        text = ""
 
-        for page in reader.pages:
-            text += page.extract_text() or ""
+def _ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
 
-        # You can also chunk text (recommended)
-        self.text_chunks = [text]
 
-        # Generate embeddings
-        vectors = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=self.text_chunks
-        )
+# 🔥 FIX: Remove bad Unicode characters that cause UTF-8 errors
+def clean_text(text: str) -> str:
+    # Removes invalid surrogate characters
+    return text.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
-        self.embeddings = [v.embedding for v in vectors.data]
 
-        dim = len(self.embeddings[0])
-        self.index = faiss.IndexFlatL2(dim)
-        self.index.add(np.array(self.embeddings).astype("float32"))
+def split_text(text, chunk_size=1000, chunk_overlap=100):
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start = end - chunk_overlap
+    return chunks
 
-    def ask(self, query):
-        if self.index is None:
-            return "Please upload a PDF first."
 
-        # Embed query
-        query_vec = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=query
-        ).data[0].embedding
+def create_vectorstore_from_pdf(
+    pdf_path: str,
+    index_name: str = "default",
+    chunk_size: int = 1000,
+    chunk_overlap: int = 100,
+    persist: bool = True
+):
+    _ensure_dir(DEFAULT_INDEX_DIR)
+    index_dir = os.path.join(DEFAULT_INDEX_DIR, index_name)
 
-        # Search FAISS
-        D, I = self.index.search(
-            np.array([query_vec]).astype("float32"), 
-            k=1
-        )
+    # If cached FAISS index exists, load it
+    if os.path.exists(os.path.join(index_dir, "faiss.index")):
+        faiss_index = faiss.read_index(os.path.join(index_dir, "faiss.index"))
+        with open(os.path.join(index_dir, "chunks.txt"), "r", encoding="utf8") as f:
+            chunks = f.read().split("<SPLIT>")
+        return faiss_index, chunks
 
-        context = self.text_chunks[I[0][0]]
+    # Load PDF
+    reader = PdfReader(pdf_path)
+    text = ""
+    for page in reader.pages:
+        try:
+            extracted = page.extract_text() or ""
+            text += extracted
+        except:
+            continue
 
-        # Ask the model
-        response = client.chat.completions.create(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": "Answer using the provided context only."},
-                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
-            ]
-        )
+    # 🔥 FIX: Clean the entire text before splitting
+    text = clean_text(text)
 
-        return response.choices[0].message.content
+    # Split into chunks
+    chunks = split_text(text, chunk_size, chunk_overlap)
+
+    # Embed chunks
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=chunks
+    )
+
+    vectors = [item.embedding for item in response.data]
+    vectors_np = np.array(vectors).astype("float32")
+
+    # Create FAISS index
+    dim = vectors_np.shape[1]
+    index = faiss.IndexFlatL2(dim)
+    index.add(vectors_np)
+
+    # Persist
+    if persist:
+        _ensure_dir(index_dir)
+        faiss.write_index(index, os.path.join(index_dir, "faiss.index"))
+        with open(os.path.join(index_dir, "chunks.txt"), "w", encoding="utf8") as f:
+            f.write("<SPLIT>".join(chunks))
+
+    return index, chunks
