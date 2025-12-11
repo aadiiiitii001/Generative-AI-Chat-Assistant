@@ -15,6 +15,12 @@ def _ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
+# 🔥 FIX: Remove bad Unicode characters that cause UTF-8 errors
+def clean_text(text: str) -> str:
+    # Removes invalid surrogate characters
+    return text.encode("utf-8", "ignore").decode("utf-8", "ignore")
+
+
 def split_text(text, chunk_size=1000, chunk_overlap=100):
     chunks = []
     start = 0
@@ -46,7 +52,14 @@ def create_vectorstore_from_pdf(
     reader = PdfReader(pdf_path)
     text = ""
     for page in reader.pages:
-        text += page.extract_text() or ""
+        try:
+            extracted = page.extract_text() or ""
+            text += extracted
+        except:
+            continue
+
+    # 🔥 FIX: Clean the entire text before splitting
+    text = clean_text(text)
 
     # Split into chunks
     chunks = split_text(text, chunk_size, chunk_overlap)
