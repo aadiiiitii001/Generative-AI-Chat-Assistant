@@ -1,67 +1,42 @@
 # app/chat_engine.py
 
-from typing import Any, Dict, Optional
-
-# ✅ Correct imports for new LangChain versions
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from typing import Optional, Dict, Any
+from langchain_openai import ChatOpenAI
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain.vectorstores import FAISS
 
 
-def build_chat_chain(
-    vectorstore: FAISS,
-    llm_model_name: str = None,
-    temperature: float = 0.0,
-    max_tokens: Optional[int] = None,
-) -> ConversationalRetrievalChain:
-    """
-    Build ConversationalRetrievalChain with FAISS vectorstore.
-    """
+class ChatEngine:
+    """Wrapper class for LangChain’s ConversationalRetrievalChain."""
 
-    model_name = llm_model_name or "gpt-4o-mini"
+    def __init__(self, vectorstore: FAISS, model_name="gpt-4o-mini"):
+        self.vectorstore = vectorstore
+        self.llm = ChatOpenAI(model=model_name, temperature=0.0)
 
-    llm = ChatOpenAI(
-        model=model_name,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
+        self.memory = ConversationBufferMemory(
+            memory_key="chat_history",
+            return_messages=True
+        )
 
-    memory = ConversationBufferMemory(
-        memory_key="chat_history",
-        return_messages=True
-    )
+        self.retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+        self.chain = ConversationalRetrievalChain.from_llm(
+            llm=self.llm,
+            retriever=self.retriever,
+            memory=self.memory,
+            return_source_documents=True
+        )
 
-    chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=retriever,
-        memory=memory,
-        return_source_documents=True
-    )
+    def ask(self, query: str, chat_history=None) -> str:
+        """Ask question to LLM and return answer only."""
 
-    return chain
+        inputs = {"question": query}
 
+        if chat_history:
+            inputs["chat_history"] = chat_history
 
-def ask_chain(
-    chain: ConversationalRetrievalChain,
-    question: str,
-    chat_history: Optional[list] = None,
-) -> Dict[str, Any]:
-    """
-    Execute query against chat chain.
-    """
+        output = self.chain(inputs)
+        answer = output.get("answer", "Sorry, I couldn't find an answer.")
 
-    inputs = {"question": question}
-
-    if chat_history:
-        inputs["chat_history"] = chat_history
-
-    output = chain(inputs)
-
-    return {
-        "answer": output.get("answer"),
-        "source_documents": output.get("source_documents", []),
-        "raw": output,
-    }
+        return answer
