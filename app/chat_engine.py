@@ -1,48 +1,64 @@
-from typing import Optional
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
-from langchain_community.vectorstores import FAISS
-from langchain.docstore.document import Document
+import faiss
+import numpy as np
 from PyPDF2 import PdfReader
+from openai import OpenAI
 
+client = OpenAI()
 
 class ChatEngine:
-    """Chat engine for PDF question answering."""
-
     def __init__(self, model_name="gpt-4o-mini"):
-        self.llm = ChatOpenAI(model=model_name, temperature=0.0)
-        self.vectorstore = None
-        self.memory = ConversationBufferMemory(
-            memory_key="chat_history",
-            return_messages=True
-        )
-        self.chain = None
+        self.model_name = model_name
+        self.index = None
+        self.text_chunks = []
+        self.embeddings = []
 
     def load_pdf(self, pdf_file):
-        """Extract text, create embeddings and FAISS vector store."""
         reader = PdfReader(pdf_file)
         text = ""
 
         for page in reader.pages:
             text += page.extract_text() or ""
 
-        docs = [Document(page_content=text)]
+        # You can also chunk text (recommended)
+        self.text_chunks = [text]
 
-        embeddings = OpenAIEmbeddings()
-        self.vectorstore = FAISS.from_documents(docs, embeddings)
-
-        self.chain = ConversationalRetrievalChain.from_llm(
-            llm=self.llm,
-            retriever=self.vectorstore.as_retriever(search_kwargs={"k": 3}),
-            memory=self.memory,
-            return_source_documents=False
+        # Generate embeddings
+        vectors = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=self.text_chunks
         )
 
-    def ask(self, query: str) -> str:
-        """Ask question to LLM."""
-        if not self.chain:
+        self.embeddings = [v.embedding for v in vectors.data]
+
+        dim = len(self.embeddings[0])
+        self.index = faiss.IndexFlatL2(dim)
+        self.index.add(np.array(self.embeddings).astype("float32"))
+
+    def ask(self, query):
+        if self.index is None:
             return "Please upload a PDF first."
 
-        output = self.chain({"question": query})
-        return output.get("answer", "I could not find an answer.")
+        # Embed query
+        query_vec = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=query
+        ).data[0].embedding
+
+        # Search FAISS
+        D, I = self.index.search(
+            np.array([query_vec]).astype("float32"), 
+            k=1
+        )
+
+        context = self.text_chunks[I[0][0]]
+
+        # Ask the model
+        response = client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": "Answer using the provided context only."},
+                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
+            ]
+        )
+
+        return response.choices[0].message.content
