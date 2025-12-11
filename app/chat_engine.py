@@ -1,23 +1,13 @@
-# app/pdf_loader.py
-
-import os
-import numpy as np
 import faiss
+import numpy as np
 from PyPDF2 import PdfReader
 from openai import OpenAI
 
 client = OpenAI()
 
-DEFAULT_INDEX_DIR = "vectorstores"
 
-
-def _ensure_dir(path: str):
-    os.makedirs(path, exist_ok=True)
-
-
-# 🔥 FIX: Remove bad Unicode characters that cause UTF-8 errors
 def clean_text(text: str) -> str:
-    # Removes invalid surrogate characters
+    """Remove invalid Unicode characters that break UTF-8."""
     return text.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
 
@@ -31,58 +21,63 @@ def split_text(text, chunk_size=1000, chunk_overlap=100):
     return chunks
 
 
-def create_vectorstore_from_pdf(
-    pdf_path: str,
-    index_name: str = "default",
-    chunk_size: int = 1000,
-    chunk_overlap: int = 100,
-    persist: bool = True
-):
-    _ensure_dir(DEFAULT_INDEX_DIR)
-    index_dir = os.path.join(DEFAULT_INDEX_DIR, index_name)
+class ChatEngine:
+    def __init__(self, model_name="gpt-4o-mini"):
+        self.model_name = model_name
+        self.index = None
+        self.text_chunks = []
+        self.embeddings = []
 
-    # If cached FAISS index exists, load it
-    if os.path.exists(os.path.join(index_dir, "faiss.index")):
-        faiss_index = faiss.read_index(os.path.join(index_dir, "faiss.index"))
-        with open(os.path.join(index_dir, "chunks.txt"), "r", encoding="utf8") as f:
-            chunks = f.read().split("<SPLIT>")
-        return faiss_index, chunks
+    def load_pdf(self, pdf_file):
+        reader = PdfReader(pdf_file)
+        text = ""
 
-    # Load PDF
-    reader = PdfReader(pdf_path)
-    text = ""
-    for page in reader.pages:
-        try:
-            extracted = page.extract_text() or ""
-            text += extracted
-        except:
-            continue
+        for page in reader.pages:
+            try:
+                extracted = page.extract_text() or ""
+                text += extracted
+            except:
+                pass
 
-    # 🔥 FIX: Clean the entire text before splitting
-    text = clean_text(text)
+        # 🔥 FIX: Clean invalid characters
+        text = clean_text(text)
 
-    # Split into chunks
-    chunks = split_text(text, chunk_size, chunk_overlap)
+        # 🔥 Chunk text (better for embeddings)
+        self.text_chunks = split_text(text, chunk_size=800, chunk_overlap=100)
 
-    # Embed chunks
-    response = client.embeddings.create(
-        model="text-embedding-3-small",
-        input=chunks
-    )
+        # Create embeddings
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=self.text_chunks
+        )
 
-    vectors = [item.embedding for item in response.data]
-    vectors_np = np.array(vectors).astype("float32")
+        self.embeddings = [item.embedding for item in response.data]
 
-    # Create FAISS index
-    dim = vectors_np.shape[1]
-    index = faiss.IndexFlatL2(dim)
-    index.add(vectors_np)
+        dim = len(self.embeddings[0])
+        self.index = faiss.IndexFlatL2(dim)
+        self.index.add(np.array(self.embeddings).astype("float32"))
 
-    # Persist
-    if persist:
-        _ensure_dir(index_dir)
-        faiss.write_index(index, os.path.join(index_dir, "faiss.index"))
-        with open(os.path.join(index_dir, "chunks.txt"), "w", encoding="utf8") as f:
-            f.write("<SPLIT>".join(chunks))
+    def ask(self, query):
+        if self.index is None:
+            return "Please upload a PDF first."
 
-    return index, chunks
+        # Embed the query
+        query_vec = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=query
+        ).data[0].embedding
+
+        # Search for best matching chunk
+        D, I = self.index.search(np.array([query_vec]).astype("float32"), k=1)
+        best_chunk = self.text_chunks[I[0][0]]
+
+        # Ask the model using context
+        response = client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": "Answer ONLY using the provided context."},
+                {"role": "user", "content": f"Context:\n{best_chunk}\n\nQuestion: {query}"}
+            ]
+        )
+
+        return response.choices[0].message.content
