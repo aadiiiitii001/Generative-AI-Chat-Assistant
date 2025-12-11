@@ -1,84 +1,75 @@
 # app/pdf_loader.py
 
 import os
-from typing import Optional
+import numpy as np
+import faiss
+from PyPDF2 import PdfReader
+from openai import OpenAI
 
-from langchain.document_loaders import PyPDFLoader, TextLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
+client = OpenAI()
 
-# Directory to store persisted vectorstores
 DEFAULT_INDEX_DIR = "vectorstores"
+
 
 def _ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
+
+
+def split_text(text, chunk_size=1000, chunk_overlap=100):
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start = end - chunk_overlap
+    return chunks
+
 
 def create_vectorstore_from_pdf(
     pdf_path: str,
     index_name: str = "default",
     chunk_size: int = 1000,
     chunk_overlap: int = 100,
-    embedding_model: Optional[OpenAIEmbeddings] = None,
-    persist: bool = True,
-) -> FAISS:
-    """
-    Load a PDF, split it into chunks, embed chunks with OpenAIEmbeddings,
-    create a FAISS vectorstore, and optionally persist it.
-
-    Returns a LangChain FAISS vectorstore instance.
-    """
-    if embedding_model is None:
-        embedding_model = OpenAIEmbeddings()
-
-    # Where to save the index
-    index_dir = os.path.join(DEFAULT_INDEX_DIR, index_name)
+    persist: bool = True
+):
     _ensure_dir(DEFAULT_INDEX_DIR)
+    index_dir = os.path.join(DEFAULT_INDEX_DIR, index_name)
 
-    # If index already exists on disk, load and return
-    try:
-        if os.path.isdir(index_dir) and len(os.listdir(index_dir)) > 0:
-            vs = FAISS.load_local(index_dir, embedding_model)
-            return vs
-    except Exception:
-        # If loading fails, we'll rebuild below
-        pass
+    # If cached FAISS index exists, load it
+    if os.path.exists(os.path.join(index_dir, "faiss.index")):
+        faiss_index = faiss.read_index(os.path.join(index_dir, "faiss.index"))
+        with open(os.path.join(index_dir, "chunks.txt"), "r", encoding="utf8") as f:
+            chunks = f.read().split("<SPLIT>")
+        return faiss_index, chunks
 
-    # Load documents from PDF (fallback to TextLoader if needed)
-    try:
-        loader = PyPDFLoader(pdf_path)
-        docs = loader.load()
-    except Exception as e:
-        # Fallback: try to read as plain text
-        try:
-            loader = TextLoader(pdf_path, encoding="utf8")
-            docs = loader.load()
-        except Exception as e2:
-            raise RuntimeError(f"Failed to load document: {e}; fallback error: {e2}")
+    # Load PDF
+    reader = PdfReader(pdf_path)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() or ""
 
-    # Split documents into chunks suitable for embeddings
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        length_function=len,
+    # Split into chunks
+    chunks = split_text(text, chunk_size, chunk_overlap)
+
+    # Embed chunks
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=chunks
     )
-    split_docs = text_splitter.split_documents(docs)
 
-    # Create FAISS vectorstore from documents
-    vectorstore = FAISS.from_documents(split_docs, embedding_model)
+    vectors = [item.embedding for item in response.data]
+    vectors_np = np.array(vectors).astype("float32")
 
-    # Persist to disk for faster startup next time
+    # Create FAISS index
+    dim = vectors_np.shape[1]
+    index = faiss.IndexFlatL2(dim)
+    index.add(vectors_np)
+
+    # Persist
     if persist:
-        try:
-            vectorstore.save_local(index_dir)
-        except Exception:
-            # older langchain/FAISS versions might not support save_local; attempt manual fallback
-            try:
-                import pickle
-                with open(os.path.join(index_dir, "vectorstore.pkl"), "wb") as f:
-                    pickle.dump(vectorstore, f)
-            except Exception:
-                # if persistence fails, continue without failing the whole flow
-                pass
+        _ensure_dir(index_dir)
+        faiss.write_index(index, os.path.join(index_dir, "faiss.index"))
+        with open(os.path.join(index_dir, "chunks.txt"), "w", encoding="utf8") as f:
+            f.write("<SPLIT>".join(chunks))
 
-    return vectorstore
+    return index, chunks
