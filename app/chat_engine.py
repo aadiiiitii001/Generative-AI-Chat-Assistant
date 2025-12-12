@@ -1,13 +1,13 @@
+import os
 import faiss
 import numpy as np
 from PyPDF2 import PdfReader
 from openai import OpenAI
 
-client = OpenAI()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def clean_text(text: str) -> str:
-    """Remove invalid Unicode characters that break UTF-8."""
     return text.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
 
@@ -39,13 +39,9 @@ class ChatEngine:
             except:
                 pass
 
-        # 🔥 FIX: Clean invalid characters
         text = clean_text(text)
-
-        # 🔥 Chunk text (better for embeddings)
         self.text_chunks = split_text(text, chunk_size=800, chunk_overlap=100)
 
-        # Create embeddings
         response = client.embeddings.create(
             model="text-embedding-3-small",
             input=self.text_chunks
@@ -61,17 +57,14 @@ class ChatEngine:
         if self.index is None:
             return "Please upload a PDF first."
 
-        # Embed the query
         query_vec = client.embeddings.create(
             model="text-embedding-3-small",
             input=query
         ).data[0].embedding
 
-        # Search for best matching chunk
         D, I = self.index.search(np.array([query_vec]).astype("float32"), k=1)
         best_chunk = self.text_chunks[I[0][0]]
 
-        # Ask the model using context
         response = client.chat.completions.create(
             model=self.model_name,
             messages=[
